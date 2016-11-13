@@ -1,7 +1,7 @@
 ﻿// copyright marazmista @ 29.03.2014
 
 #include "dxorg.h"
-#include "globalStuff.h"
+#include "gpu.h"
 
 #include <QFile>
 #include <QTextStream>
@@ -11,11 +11,14 @@
 
 // define static members //
 dXorg::tempSensor dXorg::currentTempSensor = dXorg::TS_UNKNOWN;
+globalStuff::drverModule dXorg::currentDriverModule;
 globalStuff::powerMethod dXorg::currentPowerMethod;
 int dXorg::sensorsGPUtempIndex;
+short dXorg::rxMatchIndex;
 QChar dXorg::gpuSysIndex;
 QSharedMemory dXorg::sharedMem;
 dXorg::driverFilePaths dXorg::filePaths;
+dXorg::rxPatternsStruct dXorg::rxPatterns;
 // end //
 
 daemonComm *dcomm = new daemonComm();
@@ -24,6 +27,20 @@ void dXorg::configure(QString gpuName) {
     figureOutGpuDataFilePaths(gpuName);
     currentTempSensor = testSensor();
     currentPowerMethod = getPowerMethod();
+    rxMatchIndex = ((dXorg::currentDriverModule == globalStuff::RADEON) ? 1 : 3);
+
+    if (dXorg::currentDriverModule == globalStuff::RADEON) {
+        dXorg::rxPatterns.powerLevel = "power\\slevel\\s\\d",
+            dXorg::rxPatterns.sclk = "sclk:\\s\\d+",
+            dXorg::rxPatterns.mclk = "mclk:\\s\\d+",
+            dXorg::rxPatterns.vclk = "vclk:\\s\\d+",
+            dXorg::rxPatterns.dclk = "dclk:\\s\\d+",
+            dXorg::rxPatterns.vddc = "vddc:\\s\\d+",
+            dXorg::rxPatterns.vddci = "vddci:\\s\\d+";
+    } else if (dXorg::currentDriverModule == globalStuff::AMDGPU) {
+        dXorg::rxPatterns.sclk = "\\[\\s+sclk\\s+\\]:\\s\\d+",
+            dXorg::rxPatterns.mclk = "\\[\\s+mclk\\s+\\]:\\s\\d+";
+    }
 
     if (!globalStuff::globalConfig.rootMode) {
         qDebug() << "Running in non-root mode, connecting and configuring the daemon";
@@ -90,9 +107,8 @@ void dXorg::figureOutGpuDataFilePaths(QString gpuName) {
     filePaths.profilePath = devicePath + file_powerProfile;
     filePaths.dpmStateFilePath = devicePath + file_powerDpmState;
     filePaths.forcePowerLevelFilePath = devicePath + file_powerDpmForcePerformanceLevel;
-    filePaths.moduleParamsPath = devicePath + "driver/module/holders/radeon/parameters/";
-    filePaths.clocksPath = "/sys/kernel/debug/dri/"+QString(gpuSysIndex)+"/radeon_pm_info"; // this path contains only index
-    //  filePaths.clocksPath = "/tmp/radeon_pm_info"; // testing
+    filePaths.moduleParamsPath = devicePath + "driver/module/holders/"+gpu::driverModuleName+"/parameters/";
+    filePaths.clocksPath = "/sys/kernel/debug/dri/"+QString(gpuSysIndex)+"/"+gpu::driverModuleName+"_pm_info"; // this path contains only index
     filePaths.overDrivePath = devicePath + file_overclockLevel;
 
 
@@ -169,44 +185,44 @@ globalStuff::gpuClocksStruct dXorg::getClocks(const QString &data) {
     case globalStuff::DPM: {
         QRegExp rx;
 
-        rx.setPattern("power\\slevel\\s\\d");
+        rx.setPattern(rxPatterns.powerLevel);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty())
             tData.powerLevel = rx.cap(0).split(' ')[2].toShort();
 
-        rx.setPattern("sclk:\\s\\d+");
+        rx.setPattern(rxPatterns.sclk);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty())
-            tData.coreClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble() / 100;
+            tData.coreClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble() / ((dXorg::currentDriverModule == globalStuff::RADEON) ? 100 : 1);
 
-        rx.setPattern("mclk:\\s\\d+");
+        rx.setPattern(rxPatterns.mclk);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty())
-            tData.memClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble() / 100;
+            tData.memClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble() / ((dXorg::currentDriverModule == globalStuff::RADEON) ? 100 : 1);
 
-        rx.setPattern("vclk:\\s\\d+");
+        rx.setPattern(rxPatterns.vclk);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty()) {
-            tData.uvdCClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble() / 100;
+            tData.uvdCClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble() / ((dXorg::currentDriverModule == globalStuff::RADEON) ? 100 : 1);
             tData.uvdCClk  = (tData.uvdCClk  == 0) ? -1 :  tData.uvdCClk;
         }
 
-        rx.setPattern("dclk:\\s\\d+");
+        rx.setPattern(rxPatterns.dclk);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty()) {
-            tData.uvdDClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble() / 100;
+            tData.uvdDClk = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble() / ((dXorg::currentDriverModule == globalStuff::RADEON) ? 100 : 1);
             tData.uvdDClk = (tData.uvdDClk == 0) ? -1 : tData.uvdDClk;
         }
 
-        rx.setPattern("vddc:\\s\\d+");
+        rx.setPattern(rxPatterns.vddc);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty())
-            tData.coreVolt = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble();
+            tData.coreVolt = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble();
 
-        rx.setPattern("vddci:\\s\\d+");
+        rx.setPattern(rxPatterns.vddci);
         rx.indexIn(data);
         if (!rx.cap(0).isEmpty())
-            tData.memVolt = rx.cap(0).split(' ',QString::SkipEmptyParts)[1].toDouble();
+            tData.memVolt = rx.cap(0).split(' ',QString::SkipEmptyParts)[rxMatchIndex].toDouble();
 
         return tData;
         break;
@@ -279,6 +295,9 @@ float dXorg::getTemperature() {
 }
 
 globalStuff::powerMethod dXorg::getPowerMethod() {
+    if (QFile::exists(filePaths.dpmStateFilePath))
+        return globalStuff::DPM;
+
     QFile powerMethodFile(filePaths.powerMethodFilePath);
     if (powerMethodFile.open(QIODevice::ReadOnly)) {
         QString s = powerMethodFile.readLine(20);
@@ -289,8 +308,9 @@ globalStuff::powerMethod dXorg::getPowerMethod() {
             return globalStuff::PROFILE;
         else
             return globalStuff::PM_UNKNOWN;
-    } else
-        return globalStuff::PM_UNKNOWN;
+    }
+
+    return globalStuff::PM_UNKNOWN;
 }
 
 dXorg::tempSensor dXorg::testSensor() {
@@ -308,8 +328,8 @@ dXorg::tempSensor dXorg::testSensor() {
 
         // if above fails, use lm_sensors
         QStringList out = globalStuff::grabSystemInfo("sensors");
-        if (out.indexOf(QRegExp("radeon-pci.+")) != -1) {
-            sensorsGPUtempIndex = out.indexOf(QRegExp("radeon-pci.+"));  // in order to not search for it again in timer loop
+        if (out.indexOf(QRegExp(gpu::driverModuleName+"-pci.+")) != -1) {
+            sensorsGPUtempIndex = out.indexOf(QRegExp(gpu::driverModuleName+"-pci.+"));  // in order to not search for it again in timer loop
             return PCI_SENSOR;
         }
         else if (out.indexOf(QRegExp("VGA_TEMP.+")) != -1) {
@@ -343,7 +363,7 @@ QStringList dXorg::getGLXInfo(QProcessEnvironment env) {
 
 QList<QTreeWidgetItem *> dXorg::getModuleInfo() {
     QList<QTreeWidgetItem *> data;
-    QStringList modInfo = globalStuff::grabSystemInfo("modinfo -p radeon");
+    QStringList modInfo = globalStuff::grabSystemInfo("modinfo -p "+gpu::driverModuleName);
     modInfo.sort();
 
     for (int i =0; i < modInfo.count(); i++) {
@@ -375,7 +395,7 @@ QStringList dXorg::detectCards() {
     for (char i = 0; i < out.count(); i++) {
         QFile f("/sys/class/drm/"+out[i]+"/device/uevent");
         if (f.open(QIODevice::ReadOnly)) {
-            if (f.readLine(50).contains("DRIVER=radeon"))
+            if (QString(f.readLine(50)).contains("DRIVER="+gpu::driverModuleName))
                 data.append(f.fileName().split('/')[4]);
         }
     }
@@ -606,7 +626,7 @@ globalStuff::driverFeatures dXorg::figureOutDriverFeatures() {
 }
 
 globalStuff::gpuClocksStruct dXorg::getFeaturesFallback() {
-    QFile f("/tmp/radeon_pm_info");
+    QFile f("/tmp/"+gpu::driverModuleName+"_pm_info");
     if (f.open(QIODevice::ReadOnly)) {
         globalStuff::gpuClocksStruct fallbackFeatures;
         QString s = QString(f.readAll());

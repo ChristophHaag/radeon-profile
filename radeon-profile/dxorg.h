@@ -53,6 +53,7 @@ public:
 
     static void resetOverClock();
 
+    static globalStuff::drverModule currentDriverModule;
 
 private:
     enum tempSensor {
@@ -65,6 +66,10 @@ private:
 
     static QChar gpuSysIndex;
     static QSharedMemory sharedMem;
+
+    static struct rxPatternsStruct {
+        QString powerLevel, sclk, mclk, vclk, dclk, vddc, vddci;
+    } rxPatterns;
 
     static struct driverFilePaths {
         QString powerMethodFilePath,
@@ -79,7 +84,9 @@ private:
             pwmMaxSpeedPath,
             overDrivePath;
     } filePaths;
+
     static int sensorsGPUtempIndex;
+    static short rxMatchIndex;
     static dXorg::tempSensor currentTempSensor;
     static globalStuff::powerMethod currentPowerMethod;
 
