@@ -8,6 +8,8 @@
 #include <QTime>
 #include <QCoreApplication>
 #include <QDebug>
+#include <qcryptographichash.h>
+#include <QDir>
 
 // define static members //
 dXorg::tempSensor dXorg::currentTempSensor = dXorg::TS_UNKNOWN;
@@ -22,6 +24,32 @@ dXorg::driverFilePaths dXorg::filePaths;
 dXorg::rxPatternsStruct dXorg::rxPatterns;
 daemonComm *dXorg::dcomm = new daemonComm();
 // end //
+
+//copied from qsharedmemory.cpp
+QString
+makePlatformSafeKey(const QString &key, const QString &prefix)
+{
+    if (key.isEmpty())
+	return QString();
+
+    QString result = prefix;
+
+    QString part1 = key;
+    part1.replace(QRegExp(QLatin1String("[^A-Za-z]")), QString());
+    result.append(part1);
+
+    QByteArray hex = QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex();
+    result.append(QLatin1String(hex));
+    #ifdef Q_OS_WIN
+    return result;
+    #elif defined(Q_OS_SYMBIAN)
+    return result.left(KMaxKernelName);
+    #elif defined(QT_POSIX_IPC)
+    return QLatin1Char('/') + result;
+    #else
+    return QDir::tempPath() + QLatin1Char('/') + result;
+    #endif
+}
 
 void dXorg::configure(const QString &gpuName) {
     setupDriverModule(gpuName);
@@ -46,8 +74,13 @@ void dXorg::configure(const QString &gpuName) {
                 if (!sharedMem.attach())
                     qCritical() << "Unable to attach to the shared memory: " << sharedMem.errorString();
 
-            } else
+	    }
+	    if (sharedMem.error() == QSharedMemory::PermissionDenied) {
+		qCritical() << "Permission denied: " << sharedMem.key();
+		makePlatformSafeKey(sharedMem.key(), QLatin1String("qipc_systemsem_"));
+	    } else {
                 qCritical() << "Unable to create the shared memory: " << sharedMem.errorString();
+	    }
         }
         // If QSharedMemory::create() returns true, it has already automatically attached
     }
